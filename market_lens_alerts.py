@@ -31,6 +31,13 @@ HEADLESS = os.getenv("HEADLESS", "false").strip().lower() == "true"
 AUTO_START = os.getenv("AUTO_START", "false").strip().lower() == "true"
 RUN_ONCE = os.getenv("RUN_ONCE", "false").strip().lower() == "true"
 SEND_STARTUP_MESSAGE = os.getenv("SEND_STARTUP_MESSAGE", "true").strip().lower() == "true"
+CHECK_OUTSIDE_MARKET_HOURS = os.getenv("CHECK_OUTSIDE_MARKET_HOURS", "false").strip().lower() == "true"
+DATA_SOURCE = os.getenv("DATA_SOURCE", "market_lens").strip().lower()
+NSE_API_URL = os.getenv(
+    "NSE_API_URL",
+    "https://www.nseindia.com/api/live-analysis-variations?index=gainers&type=FOS",
+).strip()
+NSE_API_BUCKET = os.getenv("NSE_API_BUCKET", "allSec").strip()
 PROFILE_DIR = ROOT / "browser_profile"
 STATE_FILE = ROOT / "alerts_sent.json"
 IST = ZoneInfo("Asia/Kolkata")
@@ -107,18 +114,78 @@ def parse_visible_metrics(text):
 
 def format_alert_metrics(item):
     metrics = item.get("metrics", {})
-    lines = [
-        f"1D RETURN: {item['change']:+.2f}%",
-        f"1W RETURN: {metrics['1w_return']:+.2f}%" if metrics.get("1w_return") is not None else "1W RETURN: n/a",
-        f"1M RETURN: {metrics['1m_return']:+.2f}%" if metrics.get("1m_return") is not None else "1M RETURN: n/a",
-    ]
+    lines = [f"1D RETURN: {item['change']:+.2f}%"]
+    if metrics.get("1w_return") is not None:
+        lines.append(f"1W RETURN: {metrics['1w_return']:+.2f}%")
+    if metrics.get("1m_return") is not None:
+        lines.append(f"1M RETURN: {metrics['1m_return']:+.2f}%")
     if metrics.get("market_cap"):
         lines.append(f"Market cap: {metrics['market_cap']}")
     if metrics.get("volume"):
         lines.append(f"Volume: {metrics['volume']}")
     if metrics.get("pe_ratio"):
         lines.append(f"P/E: {metrics['pe_ratio']}")
+    if metrics.get("ltp") is not None:
+        lines.append(f"LTP: ₹{metrics['ltp']}")
+    if metrics.get("prev_price") is not None:
+        lines.append(f"Previous close: ₹{metrics['prev_price']}")
+    if metrics.get("day_high") is not None and metrics.get("day_low") is not None:
+        lines.append(f"Day range: ₹{metrics['day_low']} - ₹{metrics['day_high']}")
+    if metrics.get("trade_quantity") is not None:
+        lines.append(f"Traded quantity: {metrics['trade_quantity']:,}")
+    if metrics.get("turnover") is not None:
+        lines.append(f"Turnover: ₹{metrics['turnover']:,.2f} lakh")
     return "\n".join(lines)
+
+def fetch_nse_api_rows():
+    """Fetch top NSE gainers without opening the Market Lens browser page."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/market-data/top-gainers-losers",
+    }
+    last_error = None
+    for attempt in range(1, 4):
+        session = requests.Session()
+        session.headers.update(headers)
+        try:
+            session.get("https://www.nseindia.com", timeout=20)
+            response = session.get(NSE_API_URL, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+            bucket = payload.get(NSE_API_BUCKET, {})
+            records = bucket.get("data", []) if isinstance(bucket, dict) else []
+            rows = []
+            for record in records:
+                ticker = str(record.get("symbol", "")).strip()
+                change = record.get("perChange", record.get("net_price"))
+                if not ticker or change is None:
+                    continue
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "row": record,
+                        "change": float(change),
+                        "metrics": {
+                            "ltp": record.get("ltp"),
+                            "prev_price": record.get("prev_price"),
+                            "day_high": record.get("high_price"),
+                            "day_low": record.get("low_price"),
+                            "trade_quantity": record.get("trade_quantity"),
+                            "turnover": record.get("turnover"),
+                        },
+                    }
+                )
+            rows.sort(key=lambda item: item["change"], reverse=True)
+            logging.info("Fetched %d NSE top-gainer rows from the public endpoint", len(rows))
+            return rows
+        except Exception as exc:
+            last_error = exc
+            logging.warning("NSE API attempt %d failed; retrying", attempt)
+            if attempt < 3:
+                time.sleep(2)
+    raise last_error
 
 def wait_for_domcontentloaded(page):
     try:
@@ -264,7 +331,63 @@ def is_market_daytime():
         now.hour < 15 or (now.hour == 15 and now.minute <= 30)
     )
 
+def process_rows(rows, source_label):
+    if not rows:
+        logging.warning("No stock rows parsed from %s", source_label)
+        return
+    state = load_state()
+    day = datetime.now(IST).date().isoformat()
+    logging.info("Parsed %d rows from %s", len(rows), source_label)
+
+    for item in rows:
+        ticker = item["ticker"]
+        change = item["change"]
+        key = f"{day}:{ticker}"
+        logging.info("%s 1D return %.2f%%", ticker, change)
+
+        if change >= THRESHOLD_PERCENT and (ALLOW_REPEAT_ALERTS or key not in state):
+            message = (
+                "🚨 NSE MARKET ALERT\n\n"
+                f"Stock: {ticker}\n"
+                f"{format_alert_metrics(item)}\n"
+                f"Alert threshold: +{THRESHOLD_PERCENT:.2f}%\n\n"
+                f"Source: {source_label}.\n"
+                "This is a market-movement alert, not a buy/sell recommendation. "
+                "Verify liquidity, news, spread, and risk before acting."
+            )
+            send_telegram(message)
+            state[key] = datetime.now(IST).isoformat()
+            save_state(state)
+            logging.info("Alert sent: %s", ticker)
+
+def run_api_monitor():
+    if SEND_STARTUP_MESSAGE:
+        send_telegram(
+            "✅ NSE API market monitor started.\n"
+            f"Alert rule: 1D return >= +{THRESHOLD_PERCENT:.2f}%\n"
+            f"Repeat alerts: {'enabled' if ALLOW_REPEAT_ALERTS else 'one per symbol per day'}.\n"
+            f"Check interval: {CHECK_EVERY_SECONDS // 60} minutes."
+        )
+
+    while True:
+        try:
+            if CHECK_OUTSIDE_MARKET_HOURS or is_market_daytime():
+                process_rows(fetch_nse_api_rows(), "NSE public market-data endpoint")
+            else:
+                logging.info("Outside weekday market hours; waiting.")
+        except Exception:
+            logging.exception("NSE API monitoring pass failed")
+
+        if RUN_ONCE:
+            logging.info("Run-once mode complete; exiting")
+            break
+        time.sleep(CHECK_EVERY_SECONDS)
+
 def main():
+    if DATA_SOURCE in {"nse_api", "nse", "api"}:
+        run_api_monitor()
+        return
+
     if not SCREENER_URL:
         raise SystemExit("Set SCREENER_URL in .env to your NSE Market Lens screener URL.")
 

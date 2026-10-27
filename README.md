@@ -1,6 +1,6 @@
 # NSE Market Lens -> Telegram Crawler (local browser prototype)
 
-This version opens your Market Lens screener, reads the currently rendered screener rows, sorts by **1D RETURN** descending, and sends Telegram alerts at or above `THRESHOLD_PERCENT`.
+The local mode opens your Market Lens screener, reads the currently rendered rows, sorts by **1D RETURN** descending, and sends Telegram alerts at or above `THRESHOLD_PERCENT`. The unattended GitHub Actions mode uses the official NSE public market-data endpoint so it does not depend on an interactive Market Lens browser session.
 
 ## Setup on Windows
 
