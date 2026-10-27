@@ -1,0 +1,6 @@
+.env
+.venv/
+browser_profile/
+alerts_sent.json
+*.log
+__pycache__/
