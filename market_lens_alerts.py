@@ -120,6 +120,27 @@ def format_alert_metrics(item):
         lines.append(f"P/E: {metrics['pe_ratio']}")
     return "\n".join(lines)
 
+def wait_for_domcontentloaded(page):
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
+    except PlaywrightTimeoutError:
+        logging.warning("Timed out waiting for DOM content; continuing with the rendered page")
+
+def goto_screener(page):
+    """Open the screener with retries for intermittent CI HTTP/2 failures."""
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            page.goto(SCREENER_URL, wait_until="commit", timeout=60000)
+            wait_for_domcontentloaded(page)
+            return
+        except Exception as exc:
+            last_error = exc
+            logging.warning("Screener navigation attempt %d failed; retrying", attempt)
+            if attempt < 3:
+                page.wait_for_timeout(2000)
+    raise last_error
+
 def extract_rows(page):
     """
     Read rendered rows. Prefer accessible grid/table rows; use a text fallback
@@ -253,9 +274,10 @@ def main():
             headless=HEADLESS,
             viewport={"width": 1600, "height": 1000},
             accept_downloads=False,
+            args=["--disable-http2", "--disable-quic"],
         )
         page = browser.pages[0] if browser.pages else browser.new_page()
-        page.goto(SCREENER_URL, wait_until="domcontentloaded", timeout=60000)
+        goto_screener(page)
 
         if AUTO_START:
             logging.info("Auto-start enabled; beginning without terminal input")
@@ -326,7 +348,8 @@ def main():
             # Keep the same browser page; reload to refresh screener data.
             time.sleep(CHECK_EVERY_SECONDS)
             try:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.reload(wait_until="commit", timeout=60000)
+                wait_for_domcontentloaded(page)
                 page.wait_for_timeout(2500)
                 ensure_1d_return_descending(page)
             except Exception:
