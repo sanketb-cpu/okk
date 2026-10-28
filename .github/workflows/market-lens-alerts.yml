@@ -3,10 +3,9 @@ name: NSE Market Lens alerts
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC. These cover 09:15-15:30 Asia/Kolkata on weekdays.
-    - cron: "45-59/5 3 * * 1-5"
-    - cron: "*/5 4-9 * * 1-5"
-    - cron: "0 10 * * 1-5"
+    # GitHub cron is UTC. Run every 5 minutes on weekdays across the
+    # NSE session window (09:15-15:30 Asia/Kolkata), with a small buffer.
+    - cron: "*/5 3-10 * * 1-5"
 
 concurrency:
   group: nse-market-lens-alerts
