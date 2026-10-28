@@ -3,9 +3,8 @@ name: NSE Market Lens alerts
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC. Run every 5 minutes on weekdays across the
-    # NSE session window (09:15-15:30 Asia/Kolkata), with a small buffer.
-    - cron: "*/5 3-10 * * 1-5"
+    # Start one long-running monitor at 09:15 Asia/Kolkata (03:45 UTC).
+    - cron: "45 3 * * 1-5"
 
 concurrency:
   group: nse-market-lens-alerts
@@ -17,7 +16,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 480
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -28,9 +27,9 @@ jobs:
       CHECK_EVERY_SECONDS: "300"
       HEADLESS: "true"
       AUTO_START: "true"
-      RUN_ONCE: "true"
+      RUN_ONCE: "false"
       SEND_STARTUP_MESSAGE: "false"
-      CHECK_OUTSIDE_MARKET_HOURS: "true"
+      CHECK_OUTSIDE_MARKET_HOURS: "false"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
