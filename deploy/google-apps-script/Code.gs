@@ -186,3 +186,30 @@ function testAlert() {
     'Live NSE checks run Monday–Friday, 09:15–15:30 IST.'
   );
 }
+
+/**
+ * Sunday/manual preview: sends up to three alerts from the latest NSE snapshot.
+ * On a Sunday this is normally the latest available Friday data, not live data.
+ */
+function testLatestAvailableAlerts() {
+  const properties = PropertiesService.getScriptProperties();
+  const threshold = Number(properties.getProperty('THRESHOLD_PERCENT') || '10');
+  const rows = fetchRows_().filter(function (item) { return item.change >= threshold; }).slice(0, 3);
+
+  if (!rows.length) {
+    sendTelegram_(
+      '🧪 NSE preview test\n\n' +
+      'No latest available NSE stock is at or above +' + threshold.toFixed(2) + '%.'
+    );
+    return;
+  }
+
+  rows.forEach(function (item) {
+    const reason = findPossibleReason_(item.ticker);
+    sendTelegram_(
+      '🧪 LATEST AVAILABLE NSE PREVIEW\n' +
+      'This is a Sunday test using the latest NSE snapshot, normally Friday data.\n\n' +
+      formatAlert_(item, threshold, reason)
+    );
+  });
+}
