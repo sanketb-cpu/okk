@@ -31,11 +31,17 @@ function checkMarket() {
     if (key.indexOf(today + ':') !== 0) delete state[key];
   });
 
+  let newsLookups = 0;
   fetchRows_().forEach(function (item) {
     const key = today + ':' + item.ticker;
     if (item.change < threshold || (!allowRepeats && state[key])) return;
 
-    sendTelegram_(formatAlert_(item, threshold));
+    const reason = newsLookups < 5 ? findPossibleReason_(item.ticker) : {
+      summary: 'News lookup skipped for this pass; review volume and price data below.',
+      headlines: []
+    };
+    newsLookups++;
+    sendTelegram_(formatAlert_(item, threshold, reason));
     state[key] = new Date().toISOString();
   });
 
@@ -90,7 +96,50 @@ function fetchRows_() {
   });
 }
 
-function formatAlert_(item, threshold) {
+function findPossibleReason_(ticker) {
+  const url = 'https://news.google.com/rss/search?q=' + encodeURIComponent(ticker + ' NSE India stock') + '&hl=en-IN&gl=IN&ceid=IN:en';
+  try {
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+      return { summary: 'No recent public headline found; movement may be volume-driven or technical.', headlines: [] };
+    }
+
+    const document = XmlService.parse(response.getContentText());
+    const channel = document.getRootElement().getChild('channel');
+    const items = channel ? channel.getChildren('item') : [];
+    const headlines = [];
+    let combined = '';
+    items.slice(0, 3).forEach(function (item) {
+      const title = item.getChildText('title') || '';
+      const pubDate = item.getChildText('pubDate') || '';
+      if (!title) return;
+      combined += ' ' + title.toLowerCase();
+      headlines.push(title + (pubDate ? ' (' + pubDate + ')' : ''));
+    });
+
+    if (!headlines.length) {
+      return { summary: 'No recent public headline found; movement may be volume-driven or technical.', headlines: [] };
+    }
+
+    const clues = [
+      { pattern: /quarter|result|earnings|profit|revenue|ebitda/, label: 'Possible quarterly results or earnings news' },
+      { pattern: /order|contract|deal|award|project|wins?/, label: 'Possible order, contract, or project news' },
+      { pattern: /dividend|bonus|split|buyback|record date/, label: 'Possible corporate action' },
+      { pattern: /merger|acquisition|stake|fundrais|investment|promoter/, label: 'Possible ownership, investment, or deal news' },
+      { pattern: /approval|regulator| sebi|fda|license|clearance/, label: 'Possible regulatory or approval news' },
+      { pattern: /upgrade|downgrade|target price|rating/, label: 'Possible analyst rating or target-price news' }
+    ];
+    const clue = clues.find(function (candidate) { return candidate.pattern.test(combined); });
+    return {
+      summary: clue ? clue.label : 'Recent headlines found; verify whether they relate to today\'s move.',
+      headlines: headlines
+    };
+  } catch (error) {
+    return { summary: 'News lookup unavailable; movement may be volume-driven or technical.', headlines: [] };
+  }
+}
+
+function formatAlert_(item, threshold, reason) {
   return [
     'NSE MARKET ALERT',
     '',
@@ -103,8 +152,11 @@ function formatAlert_(item, threshold) {
     'Turnover: ₹' + Number(item.turnover || 0).toLocaleString('en-IN') + ' lakh',
     'Alert threshold: +' + threshold.toFixed(2) + '%',
     '',
+    'Possible reason: ' + reason.summary,
+    reason.headlines.length ? 'Recent headlines:\n- ' + reason.headlines.join('\n- ') : '',
+    '',
     'Source: NSE public market-data endpoint.',
-    'Market-movement alert only—not a buy/sell recommendation.'
+    'Possible reason only—not a confirmed cause or buy/sell recommendation.'
   ].join('\n');
 }
 
@@ -125,4 +177,12 @@ function sendTelegram_(message) {
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
     throw new Error('Telegram request failed: HTTP ' + response.getResponseCode());
   }
+}
+
+function testAlert() {
+  sendTelegram_(
+    '✅ NSE Market Lens test alert\n\n' +
+    'Telegram connection is working.\n' +
+    'Live NSE checks run Monday–Friday, 09:15–15:30 IST.'
+  );
 }
