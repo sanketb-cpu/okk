@@ -553,7 +553,6 @@ function runBacktest() {
   }
   const report = lines.join('\n');
   Logger.log(report);
-  sendTelegram_(report);
 }
 
 function signed_(value) {
