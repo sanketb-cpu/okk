@@ -41,7 +41,7 @@ function setRecommendedSettings() {
   properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
   properties.setProperty('BACKTEST_SYMBOLS', 'ALL_UNIVERSE');
   properties.setProperty('BACKTEST_FETCH_BATCH_SIZE', '25');
-  properties.setProperty('BACKTEST_CHUNK_SYMBOLS', '75');
+  properties.setProperty('BACKTEST_CHUNK_SYMBOLS', '25');
 }
 
 /** Called automatically every five minutes by the installed trigger. */
@@ -550,7 +550,7 @@ function runBacktest() {
     days: Math.min(Number(properties.getProperty('BACKTEST_DAYS') || '30'), 60),
     holdBars: Number(properties.getProperty('BACKTEST_HOLD_BARS') || '12'),
     batchSize: Math.max(1, Number(properties.getProperty('BACKTEST_FETCH_BATCH_SIZE') || '25')),
-    chunkSize: Math.max(1, Number(properties.getProperty('BACKTEST_CHUNK_SYMBOLS') || '75')),
+    chunkSize: Math.max(1, Number(properties.getProperty('BACKTEST_CHUNK_SYMBOLS') || '25')),
     symbols: getBacktestSymbols_(),
     results: [],
     nextIndex: 0
