@@ -2,8 +2,8 @@ const TIME_ZONE = 'Asia/Kolkata';
 // NSE blocks many Google Apps Script IPs. TradingView's public scanner is used
 // here because it is reachable from Apps Script and returns current NSE quotes.
 const SCANNER_URL = 'https://scanner.tradingview.com/india/scan';
-const DEFAULT_THRESHOLD_PERCENT = 10;
-const DEFAULT_MIN_SIGNAL_SCORE = 60;
+const DEFAULT_THRESHOLD_PERCENT = 5;
+const DEFAULT_MIN_SIGNAL_SCORE = 70;
 const MIN_RELATIVE_VOLUME = 1.5;
 
 /** Run once after adding the Script Properties listed in README.md. */
@@ -19,6 +19,14 @@ function setup() {
     }
   });
   ScriptApp.newTrigger('checkMarket').timeBased().everyMinutes(5).create();
+}
+
+/** Apply the recommended intraday profile to Script Properties. */
+function setRecommendedSettings() {
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('THRESHOLD_PERCENT', '5');
+  properties.setProperty('MIN_SIGNAL_SCORE', '70');
+  properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
 }
 
 /** Called automatically every five minutes by the installed trigger. */
