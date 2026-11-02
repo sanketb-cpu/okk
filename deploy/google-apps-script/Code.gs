@@ -2,7 +2,7 @@ const TIME_ZONE = 'Asia/Kolkata';
 // NSE blocks many Google Apps Script IPs. TradingView's public scanner is used
 // here because it is reachable from Apps Script and returns current NSE quotes.
 const SCANNER_URL = 'https://scanner.tradingview.com/india/scan';
-const DEFAULT_THRESHOLD_PERCENT = 5;
+const DEFAULT_THRESHOLD_PERCENT = 3;
 const DEFAULT_MIN_SIGNAL_SCORE = 70;
 const MIN_RELATIVE_VOLUME = 1.5;
 // Official NSE individual-security F&O underlyings snapshot, 26-Oct-2026.
@@ -31,7 +31,7 @@ function setup() {
 /** Apply the recommended intraday profile to Script Properties. */
 function setRecommendedSettings() {
   const properties = PropertiesService.getScriptProperties();
-  properties.setProperty('THRESHOLD_PERCENT', '5');
+  properties.setProperty('THRESHOLD_PERCENT', '3');
   properties.setProperty('MIN_SIGNAL_SCORE', '70');
   properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
   properties.setProperty('BACKTEST_SYMBOLS', 'ALL_FNO');
