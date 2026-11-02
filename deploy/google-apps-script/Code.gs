@@ -1,7 +1,8 @@
 const TIME_ZONE = 'Asia/Kolkata';
-// NSE blocks many Google Apps Script IPs. TradingView's public scanner is used
-// here because it is reachable from Apps Script and returns current NSE quotes.
-const SCANNER_URL = 'https://scanner.tradingview.com/india/scan';
+// Live alerts use the NSE public market-data endpoint used by the original script.
+// Note: this endpoint provides the NSE gainers snapshot, not TradingView indicators.
+const NSE_HOME = 'https://www.nseindia.com';
+const NSE_API_URL = 'https://www.nseindia.com/api/live-analysis-variations?index=gainers&type=FOS';
 const DEFAULT_THRESHOLD_PERCENT = 6;
 const DEFAULT_MIN_SIGNAL_SCORE = 70;
 const MIN_RELATIVE_VOLUME = 1.5;
@@ -89,56 +90,54 @@ function isMarketTime_() {
 
 function fetchRows_() {
   const request = {
-    symbols: { query: { types: [] }, tickers: [] },
-    columns: ['name', 'close', 'change', 'volume', 'relative_volume_10d_calc', 'VWAP', 'EMA20', 'EMA50', 'RSI', 'ATR', 'high', 'low', 'close|15', 'open|15', 'high|15', 'low|15', 'change|15', 'volume|15', 'VWAP|15', 'EMA20|15', 'RSI|15'],
-    filter: [
-      { left: 'exchange', operation: 'equal', right: 'NSE' },
-      { left: 'change', operation: 'greater', right: 0 }
-    ],
-    options: { lang: 'en' },
-    range: [0, 1000],
-    sort: { sortBy: 'change', sortOrder: 'desc' }
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+      'Accept': 'application/json,text/plain,*/*',
+      'Accept-Language': 'en-IN,en;q=0.9',
+      'Referer': 'https://www.nseindia.com/market-data/top-gainers-losers'
+    }
   };
-  const response = UrlFetchApp.fetch(SCANNER_URL, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(request),
-    muteHttpExceptions: true
-  });
+  const home = UrlFetchApp.fetch(NSE_HOME, { headers: request.headers, muteHttpExceptions: true });
+  const cookieHeader = home.getAllHeaders()['Set-Cookie'];
+  const cookies = Array.isArray(cookieHeader)
+    ? cookieHeader.map(function (cookie) { return cookie.split(';')[0]; }).join('; ')
+    : (cookieHeader ? String(cookieHeader).split(';')[0] : '');
+  if (cookies) request.headers.Cookie = cookies;
+
+  const response = UrlFetchApp.fetch(NSE_API_URL, { headers: request.headers, muteHttpExceptions: true });
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
-    throw new Error('Market-data request failed: HTTP ' + response.getResponseCode());
+    throw new Error('NSE request failed: HTTP ' + response.getResponseCode());
   }
 
   const payload = JSON.parse(response.getContentText());
-  const records = payload.data || [];
+  const records = payload.allSec && payload.allSec.data ? payload.allSec.data : [];
   return records.map(function (record) {
-    const values = record.d || [];
-    const ltp = Number(values[1]);
-    const change = Number(values[2]);
-    const previous = ltp && isFinite(change) ? ltp / (1 + change / 100) : null;
+    const change = Number(record.perChange != null ? record.perChange : record.net_price);
     return {
-      ticker: String(values[0] || String(record.s || '').replace(/^NSE:/, '')).trim(),
+      ticker: String(record.symbol || '').trim(),
       change: change,
-      ltp: ltp,
-      previous: previous,
-      quantity: Number(values[3]),
-      relativeVolume: Number(values[4]),
-      vwap: Number(values[5]),
-      ema20: Number(values[6]),
-      ema50: Number(values[7]),
-      rsi: Number(values[8]),
-      atr: Number(values[9]),
-      high: Number(values[10]),
-      low: Number(values[11]),
-      close15: Number(values[12]),
-      open15: Number(values[13]),
-      high15: Number(values[14]),
-      low15: Number(values[15]),
-      change15: Number(values[16]),
-      volume15: Number(values[17]),
-      vwap15: Number(values[18]),
-      ema20_15: Number(values[19]),
-      rsi15: Number(values[20])
+      ltp: Number(record.ltp),
+      previous: Number(record.prev_price),
+      high: Number(record.high_price),
+      low: Number(record.low_price),
+      quantity: Number(record.trade_quantity),
+      turnover: Number(record.turnover),
+      relativeVolume: NaN,
+      vwap: NaN,
+      ema20: NaN,
+      ema50: NaN,
+      rsi: NaN,
+      atr: NaN,
+      close15: NaN,
+      open15: NaN,
+      high15: NaN,
+      low15: NaN,
+      change15: NaN,
+      volume15: NaN,
+      vwap15: NaN,
+      ema20_15: NaN,
+      rsi15: NaN,
+      dataSource: 'NSE public market-data endpoint'
     };
   }).filter(function (item) {
     return item.ticker && UNIVERSE_SYMBOLS[item.ticker] && isFinite(item.change);
@@ -212,40 +211,42 @@ function formatAlertLegacy_(item, threshold, reason) {
 }
 
 function fetchMarketRegime_() {
-  const request = {
-    symbols: { query: { types: [] }, tickers: ['NSE:NIFTY'] },
-    columns: ['name', 'close', 'change', 'VWAP', 'EMA20', 'EMA50', 'RSI'],
-    options: { lang: 'en' },
-    range: [0, 1]
+  return {
+    ticker: 'NIFTY',
+    label: 'NSE snapshot; technical regime unavailable',
+    bullish: false
   };
-  try {
-    const response = UrlFetchApp.fetch(SCANNER_URL, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(request),
-      muteHttpExceptions: true
-    });
-    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) throw new Error('NIFTY request failed');
-    const records = JSON.parse(response.getContentText()).data || [];
-    const values = records.length ? records[0].d || [] : [];
-    const regime = {
-      ticker: 'NIFTY',
-      close: Number(values[1]),
-      change: Number(values[2]),
-      vwap: Number(values[3]),
-      ema20: Number(values[4]),
-      ema50: Number(values[5]),
-      rsi: Number(values[6])
-    };
-    regime.bullish = regime.close > regime.vwap && regime.close > regime.ema20 && regime.ema20 >= regime.ema50;
-    regime.label = regime.bullish ? 'Bullish' : 'Neutral/Risk-off';
-    return regime;
-  } catch (error) {
-    return { ticker: 'NIFTY', label: 'Unavailable', bullish: false };
-  }
 }
 
 function scoreSetup_(item, threshold, regime) {
+  // The NSE gainers endpoint does not expose TradingView-style VWAP/EMA/RSI
+  // or a completed 15-minute candle. Keep the alert honest and score only
+  // fields that NSE actually returned.
+  if (item.dataSource === 'NSE public market-data endpoint') {
+    let nseScore = 0;
+    const nseReasons = [];
+    if (item.change >= threshold) {
+      nseScore += 70;
+      nseReasons.push('NSE daily momentum threshold met');
+    }
+    if (isFinite(item.quantity) && item.quantity > 0) {
+      nseScore += 10;
+      nseReasons.push('NSE traded quantity available');
+    }
+    if (isFinite(item.ltp) && isFinite(item.previous) && item.ltp > item.previous) {
+      nseScore += 10;
+      nseReasons.push('above previous close');
+    }
+    return {
+      score: nseScore,
+      label: 'NSE MOMENTUM ALERT',
+      reasons: nseReasons,
+      candleConfirmed: true,
+      snapshotConfirmed: true,
+      technicalsAvailable: false
+    };
+  }
+
   let score = 0;
   const reasons = [];
   if (item.change >= threshold) {
@@ -288,7 +289,9 @@ function scoreSetup_(item, threshold, regime) {
     score: score,
     label: score >= 80 ? 'A-GRADE SETUP' : (score >= 60 ? 'B-GRADE SETUP' : 'WATCHLIST'),
     reasons: reasons,
-    candleConfirmed: candleConfirmed
+    candleConfirmed: candleConfirmed,
+    snapshotConfirmed: candleConfirmed,
+    technicalsAvailable: true
   };
 }
 
@@ -318,6 +321,7 @@ function tradePlan_(item) {
 
 function formatAlert_(item, threshold, reason, signal, regime) {
   const plan = tradePlan_(item);
+  const technicalsAvailable = signal.technicalsAvailable !== false;
   const lines = [
     'NSE MARKET ALERT - ' + signal.label,
     'Signal score: ' + signal.score + '/100',
@@ -327,11 +331,11 @@ function formatAlert_(item, threshold, reason, signal, regime) {
     'LTP: Rs ' + Number(item.ltp || 0).toFixed(2),
     'Previous close: Rs ' + Number(item.previous || 0).toFixed(2),
     'Volume: ' + Number(item.quantity || 0).toLocaleString('en-IN') + ' shares',
-    'Relative volume (10D): ' + (isFinite(item.relativeVolume) ? item.relativeVolume.toFixed(2) + 'x' : 'unavailable'),
-    'VWAP / EMA20 / EMA50: Rs ' + Number(item.vwap || 0).toFixed(2) + ' / Rs ' + Number(item.ema20 || 0).toFixed(2) + ' / Rs ' + Number(item.ema50 || 0).toFixed(2),
-    'RSI: ' + (isFinite(item.rsi) ? item.rsi.toFixed(1) : 'unavailable'),
+    technicalsAvailable ? 'Relative volume (10D): ' + (isFinite(item.relativeVolume) ? item.relativeVolume.toFixed(2) + 'x' : 'unavailable') : 'Relative volume / VWAP / EMA / RSI: unavailable from NSE snapshot',
+    technicalsAvailable ? 'VWAP / EMA20 / EMA50: Rs ' + Number(item.vwap || 0).toFixed(2) + ' / Rs ' + Number(item.ema20 || 0).toFixed(2) + ' / Rs ' + Number(item.ema50 || 0).toFixed(2) : '',
+    technicalsAvailable ? 'RSI: ' + (isFinite(item.rsi) ? item.rsi.toFixed(1) : 'unavailable') : '',
     'NIFTY regime: ' + regime.label,
-    '15m candle: ' + (signal.candleConfirmed ? 'CONFIRMED bullish close above 15m VWAP/EMA20' : 'WAIT - 15m confirmation not complete'),
+    technicalsAvailable ? '15m candle: ' + (signal.candleConfirmed ? 'CONFIRMED bullish close above 15m VWAP/EMA20' : 'WAIT - 15m confirmation not complete') : 'Confirmation: NSE current gainers snapshot; 15m technical confirmation unavailable',
     'Alert threshold: +' + threshold.toFixed(2) + '%',
     '',
     'Trade checklist: ' + (signal.reasons.length ? signal.reasons.join(', ') : 'insufficient confirmation'),
@@ -344,8 +348,8 @@ function formatAlert_(item, threshold, reason, signal, regime) {
     'Possible reason: ' + reason.summary,
     reason.headlines.length ? 'Recent headlines:\n- ' + reason.headlines.join('\n- ') : '',
     '',
-    'Source: TradingView India public market scanner.',
-    'Possible reason only - not a confirmed cause or buy/sell recommendation.'
+    'Source: NSE public market-data endpoint.',
+    'NSE momentum alert only - verify live chart, volume and risk before trading.'
   ];
   return lines.join('\n');
 }
