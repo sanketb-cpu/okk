@@ -40,6 +40,7 @@ function setRecommendedSettings() {
   properties.setProperty('MIN_SIGNAL_SCORE', '70');
   properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
   properties.setProperty('BACKTEST_SYMBOLS', 'ALL_UNIVERSE');
+  properties.setProperty('BACKTEST_FETCH_BATCH_SIZE', '25');
 }
 
 /** Called automatically every five minutes by the installed trigger. */
@@ -356,18 +357,26 @@ function getBacktestSymbols_() {
 }
 
 function fetchHistoricalBars_(symbol, days) {
+  return parseHistoricalResponse_(symbol, UrlFetchApp.fetch(buildHistoricalRequest_(symbol, days)));
+}
+
+function buildHistoricalRequest_(symbol, days) {
   // Yahoo limits 15-minute history to roughly the most recent 60 days.
   const usableDays = Math.min(Number(days) || 30, 60);
   const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol + '.NS') +
     '?range=' + usableDays + 'd&interval=15m&events=history&includePrePost=false';
-  const response = UrlFetchApp.fetch(url, {
+  return {
+    url: url,
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
       'Accept': 'application/json,text/plain,*/*',
       'Accept-Language': 'en-IN,en;q=0.9'
     },
     muteHttpExceptions: true
-  });
+  };
+}
+
+function parseHistoricalResponse_(symbol, response) {
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
     throw new Error('Yahoo 15m data failed for ' + symbol + ': HTTP ' + response.getResponseCode() + ' (maximum supported lookback is 60 days)');
   }
@@ -389,6 +398,21 @@ function fetchHistoricalBars_(symbol, days) {
     }
   });
   return bars;
+}
+
+function fetchHistoricalBarsBatch_(symbols, days) {
+  const responses = UrlFetchApp.fetchAll(symbols.map(function (symbol) {
+    return buildHistoricalRequest_(symbol, days);
+  }));
+  const histories = {};
+  symbols.forEach(function (symbol, index) {
+    try {
+      histories[symbol] = { bars: parseHistoricalResponse_(symbol, responses[index]) };
+    } catch (error) {
+      histories[symbol] = { error: error.message };
+    }
+  });
+  return histories;
 }
 
 function average_(values) {
@@ -522,15 +546,25 @@ function runBacktest() {
   const requestedDays = Number(properties.getProperty('BACKTEST_DAYS') || '30');
   const days = Math.min(requestedDays, 60);
   const holdBars = Number(properties.getProperty('BACKTEST_HOLD_BARS') || '12');
+  const batchSize = Math.max(1, Number(properties.getProperty('BACKTEST_FETCH_BATCH_SIZE') || '25'));
   const symbols = getBacktestSymbols_();
   const results = [];
-  symbols.forEach(function (symbol) {
-    try {
-      results.push(backtestSymbol_(symbol, fetchHistoricalBars_(symbol, days), threshold, minScore, holdBars));
-    } catch (error) {
-      results.push({ symbol: symbol, error: error.message });
-    }
-  });
+  for (let start = 0; start < symbols.length; start += batchSize) {
+    const batch = symbols.slice(start, start + batchSize);
+    const histories = fetchHistoricalBarsBatch_(batch, days);
+    batch.forEach(function (symbol) {
+      const history = histories[symbol];
+      if (history.error) {
+        results.push({ symbol: symbol, error: history.error });
+        return;
+      }
+      try {
+        results.push(backtestSymbol_(symbol, history.bars, threshold, minScore, holdBars));
+      } catch (error) {
+        results.push({ symbol: symbol, error: error.message });
+      }
+    });
+  }
 
   const successful = results.filter(function (result) { return !result.error; });
   const totalTrades = successful.reduce(function (sum, result) { return sum + result.trades; }, 0);
@@ -539,6 +573,7 @@ function runBacktest() {
   const lines = [
     'NSE INTRADAY BACKTEST',
     'Period: requested ' + requestedDays + ' days; using last ' + days + ' available 15m days | target: 2R | hold: ' + holdBars + ' bars',
+    'Universe: ' + symbols.length + ' symbols; Yahoo requests fetched in batches of ' + batchSize,
     'Rules: F&O + NIFTY 500, +'+ threshold.toFixed(2) + '% daily move, latest 15m confirmation, volume and trend filters',
     '',
     'Total trades: ' + totalTrades,
