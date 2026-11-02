@@ -41,6 +41,7 @@ function setRecommendedSettings() {
   properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
   properties.setProperty('BACKTEST_SYMBOLS', 'ALL_UNIVERSE');
   properties.setProperty('BACKTEST_FETCH_BATCH_SIZE', '25');
+  properties.setProperty('BACKTEST_CHUNK_SYMBOLS', '75');
 }
 
 /** Called automatically every five minutes by the installed trigger. */
@@ -538,43 +539,82 @@ function backtestSymbol_(symbol, bars, threshold, minScore, holdBars) {
   return { symbol: symbol, trades: trades, wins: wins, totalR: totalR };
 }
 
-/** Run manually to evaluate the rules on recent 15-minute history. */
+/** Start a resumable full-universe backtest. */
 function runBacktest() {
+  clearBacktestContinuationTriggers_();
   const properties = PropertiesService.getScriptProperties();
-  const threshold = Number(properties.getProperty('THRESHOLD_PERCENT') || DEFAULT_THRESHOLD_PERCENT);
-  const minScore = Number(properties.getProperty('MIN_SIGNAL_SCORE') || DEFAULT_MIN_SIGNAL_SCORE);
-  const requestedDays = Number(properties.getProperty('BACKTEST_DAYS') || '30');
-  const days = Math.min(requestedDays, 60);
-  const holdBars = Number(properties.getProperty('BACKTEST_HOLD_BARS') || '12');
-  const batchSize = Math.max(1, Number(properties.getProperty('BACKTEST_FETCH_BATCH_SIZE') || '25'));
-  const symbols = getBacktestSymbols_();
-  const results = [];
-  for (let start = 0; start < symbols.length; start += batchSize) {
-    const batch = symbols.slice(start, start + batchSize);
-    const histories = fetchHistoricalBarsBatch_(batch, days);
+  const state = {
+    threshold: Number(properties.getProperty('THRESHOLD_PERCENT') || DEFAULT_THRESHOLD_PERCENT),
+    minScore: Number(properties.getProperty('MIN_SIGNAL_SCORE') || DEFAULT_MIN_SIGNAL_SCORE),
+    requestedDays: Number(properties.getProperty('BACKTEST_DAYS') || '30'),
+    days: Math.min(Number(properties.getProperty('BACKTEST_DAYS') || '30'), 60),
+    holdBars: Number(properties.getProperty('BACKTEST_HOLD_BARS') || '12'),
+    batchSize: Math.max(1, Number(properties.getProperty('BACKTEST_FETCH_BATCH_SIZE') || '25')),
+    chunkSize: Math.max(1, Number(properties.getProperty('BACKTEST_CHUNK_SYMBOLS') || '75')),
+    symbols: getBacktestSymbols_(),
+    results: [],
+    nextIndex: 0
+  };
+  CacheService.getScriptCache().put('BACKTEST_STATE', JSON.stringify(state), 21600);
+  Logger.log('Backtest started: ' + state.symbols.length + ' symbols; continuation chunks of ' + state.chunkSize + '.');
+  runBacktestChunk_();
+}
+
+/** Process one safe-sized backtest chunk, then continue via a one-minute trigger. */
+function runBacktestChunk_() {
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('BACKTEST_STATE');
+  if (!raw) {
+    Logger.log('No active backtest state found. Run runBacktest again.');
+    return;
+  }
+  const state = JSON.parse(raw);
+  const end = Math.min(state.nextIndex + state.chunkSize, state.symbols.length);
+  for (let start = state.nextIndex; start < end; start += state.batchSize) {
+    const batch = state.symbols.slice(start, Math.min(start + state.batchSize, end));
+    const histories = fetchHistoricalBarsBatch_(batch, state.days);
     batch.forEach(function (symbol) {
       const history = histories[symbol];
       if (history.error) {
-        results.push({ symbol: symbol, error: history.error });
+        state.results.push({ symbol: symbol, error: history.error });
         return;
       }
       try {
-        results.push(backtestSymbol_(symbol, history.bars, threshold, minScore, holdBars));
+        state.results.push(backtestSymbol_(symbol, history.bars, state.threshold, state.minScore, state.holdBars));
       } catch (error) {
-        results.push({ symbol: symbol, error: error.message });
+        state.results.push({ symbol: symbol, error: error.message });
       }
     });
   }
+  state.nextIndex = end;
+  if (state.nextIndex < state.symbols.length) {
+    cache.put('BACKTEST_STATE', JSON.stringify(state), 21600);
+    clearBacktestContinuationTriggers_();
+    ScriptApp.newTrigger('runBacktestChunk_').timeBased().after(60000).create();
+    Logger.log('Backtest progress: ' + state.nextIndex + '/' + state.symbols.length + ' symbols. Next chunk scheduled in about one minute.');
+    return;
+  }
+  cache.remove('BACKTEST_STATE');
+  clearBacktestContinuationTriggers_();
+  Logger.log(buildBacktestReport_(state));
+}
 
-  const successful = results.filter(function (result) { return !result.error; });
+function clearBacktestContinuationTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'runBacktestChunk_') ScriptApp.deleteTrigger(trigger);
+  });
+}
+
+function buildBacktestReport_(state) {
+  const successful = state.results.filter(function (result) { return !result.error; });
   const totalTrades = successful.reduce(function (sum, result) { return sum + result.trades; }, 0);
   const wins = successful.reduce(function (sum, result) { return sum + result.wins; }, 0);
   const totalR = successful.reduce(function (sum, result) { return sum + result.totalR; }, 0);
   const lines = [
     'NSE INTRADAY BACKTEST',
-    'Period: requested ' + requestedDays + ' days; using last ' + days + ' available 15m days | target: 2R | hold: ' + holdBars + ' bars',
-    'Universe: ' + symbols.length + ' symbols; Yahoo requests fetched in batches of ' + batchSize,
-    'Rules: F&O + NIFTY 500, +'+ threshold.toFixed(2) + '% daily move, latest 15m confirmation, volume and trend filters',
+    'Period: requested ' + state.requestedDays + ' days; using last ' + state.days + ' available 15m days | target: 2R | hold: ' + state.holdBars + ' bars',
+    'Universe: ' + state.symbols.length + ' symbols; Yahoo requests fetched in batches of ' + state.batchSize + ' across resumable chunks of ' + state.chunkSize,
+    'Rules: F&O + NIFTY 500, +' + state.threshold.toFixed(2) + '% daily move, latest 15m confirmation, volume and trend filters',
     '',
     'Total trades: ' + totalTrades,
     'Wins: ' + wins,
@@ -588,8 +628,8 @@ function runBacktest() {
     '',
     'This is a research backtest using Yahoo Finance 15m history; slippage, brokerage, taxes and gaps are not modeled.'
   ];
-  if (results.some(function (result) { return result.error; })) {
-    lines.push('Unavailable: ' + results.filter(function (result) { return result.error; }).map(function (result) { return result.symbol + ' (' + result.error + ')'; }).join(', '));
+  if (state.results.some(function (result) { return result.error; })) {
+    lines.push('Unavailable: ' + state.results.filter(function (result) { return result.error; }).map(function (result) { return result.symbol + ' (' + result.error + ')'; }).join(', '));
   }
   const report = lines.join('\n');
   Logger.log(report);
