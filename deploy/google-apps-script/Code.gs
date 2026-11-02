@@ -34,6 +34,7 @@ function setRecommendedSettings() {
   properties.setProperty('THRESHOLD_PERCENT', '5');
   properties.setProperty('MIN_SIGNAL_SCORE', '70');
   properties.setProperty('ALLOW_REPEAT_ALERTS', 'true');
+  properties.setProperty('BACKTEST_SYMBOLS', 'RELIANCE,HDFCBANK,ICICIBANK,SBIN,INFY,TCS,LT,AXISBANK,BAJFINANCE,TATASTEEL,ADANIENT,ADANIPORTS,BAJAJFINSV,BHARTIARTL,BEL,COALINDIA,DLF,HAL,HINDALCO,HINDUNILVR,ITC,JSWSTEEL,KOTAKBANK,MARUTI,NTPC,ONGC,POWERGRID,SUNPHARMA,TITAN,WIPRO');
 }
 
 /** Called automatically every five minutes by the installed trigger. */
