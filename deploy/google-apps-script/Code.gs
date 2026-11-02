@@ -349,17 +349,25 @@ function getBacktestSymbols_() {
 }
 
 function fetchHistoricalBars_(symbol, days) {
+  // Yahoo limits 15-minute history to roughly the most recent 60 days.
+  const usableDays = Math.min(Number(days) || 30, 60);
   const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol + '.NS') +
-    '?range=' + days + 'd&interval=15m&events=history';
+    '?range=' + usableDays + 'd&interval=15m&events=history&includePrePost=false';
   const response = UrlFetchApp.fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0' },
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+      'Accept': 'application/json,text/plain,*/*',
+      'Accept-Language': 'en-IN,en;q=0.9'
+    },
     muteHttpExceptions: true
   });
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
-    throw new Error('Historical data failed for ' + symbol + ': HTTP ' + response.getResponseCode());
+    throw new Error('Yahoo 15m data failed for ' + symbol + ': HTTP ' + response.getResponseCode() + ' (maximum supported lookback is 60 days)');
   }
-  const result = (JSON.parse(response.getContentText()).chart || {}).result;
-  if (!result || !result.length) throw new Error('No historical data for ' + symbol);
+  const payload = JSON.parse(response.getContentText());
+  if (payload.chart && payload.chart.error) throw new Error('Yahoo 15m data failed for ' + symbol + ': ' + payload.chart.error.description);
+  const result = (payload.chart || {}).result;
+  if (!result || !result.length) throw new Error('No Yahoo 15m data for ' + symbol);
   const data = result[0];
   const quote = data.indicators.quote[0];
   const bars = [];
@@ -504,7 +512,8 @@ function runBacktest() {
   const properties = PropertiesService.getScriptProperties();
   const threshold = Number(properties.getProperty('THRESHOLD_PERCENT') || DEFAULT_THRESHOLD_PERCENT);
   const minScore = Number(properties.getProperty('MIN_SIGNAL_SCORE') || DEFAULT_MIN_SIGNAL_SCORE);
-  const days = Number(properties.getProperty('BACKTEST_DAYS') || '30');
+  const requestedDays = Number(properties.getProperty('BACKTEST_DAYS') || '30');
+  const days = Math.min(requestedDays, 60);
   const holdBars = Number(properties.getProperty('BACKTEST_HOLD_BARS') || '12');
   const symbols = getBacktestSymbols_();
   const results = [];
@@ -522,7 +531,7 @@ function runBacktest() {
   const totalR = successful.reduce(function (sum, result) { return sum + result.totalR; }, 0);
   const lines = [
     'NSE INTRADAY BACKTEST',
-    'Period: last ' + days + ' days | 15m bars | target: 2R | hold: ' + holdBars + ' bars',
+    'Period: requested ' + requestedDays + ' days; using last ' + days + ' available 15m days | target: 2R | hold: ' + holdBars + ' bars',
     'Rules: F&O only, +'+ threshold.toFixed(2) + '% daily move, latest 15m confirmation, volume and trend filters',
     '',
     'Total trades: ' + totalTrades,
@@ -538,7 +547,7 @@ function runBacktest() {
     'This is a research backtest using Yahoo Finance 15m history; slippage, brokerage, taxes and gaps are not modeled.'
   ];
   if (results.some(function (result) { return result.error; })) {
-    lines.push('Unavailable: ' + results.filter(function (result) { return result.error; }).map(function (result) { return result.symbol; }).join(', '));
+    lines.push('Unavailable: ' + results.filter(function (result) { return result.error; }).map(function (result) { return result.symbol + ' (' + result.error + ')'; }).join(', '));
   }
   const report = lines.join('\n');
   Logger.log(report);
